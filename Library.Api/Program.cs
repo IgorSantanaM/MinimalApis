@@ -1,10 +1,30 @@
 using FluentValidation;
 using FluentValidation.Results;
+using Library.Api.Auth;
 using Library.Api.Data;
 using Library.Api.Models;
 using Library.Api.Services;
+using Microsoft.AspNetCore.Http.Json;
 
-var builder = WebApplication.CreateBuilder(args);
+var builder = WebApplication.CreateBuilder(new WebApplicationOptions
+{
+    Args = args,
+    //WebRootPath = "./wwwroot",
+    //EnvironmentName = Environment.GetEnvironmentVariable("env"),
+    //ApplicationName = "Library.Api",
+});
+
+builder.Services.Configure<JsonOptions>(options =>
+{
+    options.SerializerOptions.PropertyNameCaseInsensitive = true;
+    options.SerializerOptions.IncludeFields = true;
+});
+
+builder.Configuration.AddJsonFile("appsettings.Local.json", optional: true, reloadOnChange: true);
+
+builder.Services.AddAuthentication(ApiKeySchemeConstants.SchemeName)
+    .AddScheme<ApiKeyAuthSchemeOptions, ApiKeyAuthHandler>(ApiKeySchemeConstants.SchemeName, _ => { });
+builder.Services.AddAuthorization();
 
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
@@ -21,8 +41,11 @@ var app = builder.Build();
 app.UseSwagger();
 app.UseSwaggerUI();
 
-app.MapPost("books", async (Book book, IBookService bookService,
-    IValidator<Book> validator) =>
+app.UseAuthorization();
+app.MapPost("books",
+//[Authorize(AuthenticationSchemes = ApiKeySchemeConstants.SchemeName)]
+async (Book book, IBookService bookService, LinkGenerator linker,
+    IValidator<Book> validator, HttpContext context) =>
 {
     var validationResult = await validator.ValidateAsync(book);
     if (!validationResult.IsValid)
@@ -34,13 +57,20 @@ app.MapPost("books", async (Book book, IBookService bookService,
     if (!created)
     {
         return Results.BadRequest(new List<ValidationFailure>
-        {
-            new ("Isbn", "A book with this ISBN-13 already exists")
-        });
+    {
+        new("Isbn", "A book with this ISBN-13 already exists")
+    });
     }
 
-    return Results.Created($"/books/{book.Isbn}", book);
-});
+    //var path = linker.GetPathByName("GetBook", new { Isbn = book.Isbn })!;
+    var locationUri = linker.GetUriByName(context, "GetBook", new { Isbn = book.Isbn })!;
+    return Results.Created(locationUri, book);
+    //return Results.CreatedAtRoute("GetBook", new {Isbn = book.Isbn}, book);
+}).WithName("CreateBook")
+  .Accepts<Book>("application/json")
+  .Produces<Book>(201)
+  .Produces<IEnumerable<ValidationFailure>>(400)
+  .WithTags("Books");
 
 app.MapGet("books", async (IBookService bookService, string? searchTerm) =>
 {
@@ -52,13 +82,18 @@ app.MapGet("books", async (IBookService bookService, string? searchTerm) =>
 
     var books = await bookService.GetAllAsync();
     return Results.Ok(books);
-});
+}).WithName("GetBooks")
+  .Produces<IEnumerable<Book>>(200);
 
 app.MapGet("books/{isbn}", async (string isbn, IBookService bookService) =>
 {
     var book = await bookService.GetByIsbnAsync(isbn);
     return book is not null ? Results.Ok(book) : Results.NotFound();
-});
+}).WithName("GetBook")
+  .Produces<Book>(200)
+  .Produces(404)
+  .WithTags("Books");
+
 
 app.MapPut("books/{isbn}", async (string isbn, Book book, IBookService bookService,
     IValidator<Book> validator) =>
@@ -72,13 +107,25 @@ app.MapPut("books/{isbn}", async (string isbn, Book book, IBookService bookServi
 
     var updated = await bookService.UpdateAsync(book);
     return updated ? Results.Ok(book) : Results.NotFound();
-});
+}).WithName("UpdateBook")
+  .Accepts<Book>("application/json")
+  .Produces<Book>(201)
+  .Produces<IEnumerable<ValidationFailure>>(400)
+  .WithTags("Books");
 
 app.MapDelete("books/{isbn}", async (string isbn, IBookService bookService) =>
 {
     var deleted = await bookService.DeleteAsync(isbn);
     return deleted ? Results.NoContent() : Results.NotFound();
-});
+}).WithName("DeleteBook")
+  .Produces(204)
+  .Produces(404)
+  .WithTags("Books");
+
+app.MapGet("status", () =>
+{
+    return Results.Extensions.
+})
 
 var databaseInitializer = app.Services.GetRequiredService<DatabaseInitializer>();
 await databaseInitializer.InitializeAsync();
